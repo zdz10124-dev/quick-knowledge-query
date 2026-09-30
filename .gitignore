@@ -12,6 +12,8 @@ state.json
 # 本地打包产物
 快速知识查询.exe
 *.zip
+release_share/
+_release_test/
 
 # IDE / OS
 .vscode/
