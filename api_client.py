@@ -45,8 +45,9 @@ class DeepSeekClient:
         return self.get_environment_api_key()
 
     def set_api_key(self, api_key: str) -> None:
-        """设置仅本次进程使用的 API Key，不写入配置文件或磁盘。"""
-        self._api_key_override = api_key.strip()
+        """设置仅本次进程使用的 API Key；留空时恢复使用环境变量，不写入磁盘。"""
+        value = api_key.strip()
+        self._api_key_override = value if value else None
 
     def has_api_key(self) -> bool:
         """检查当前是否有可用 API Key，但不暴露密钥内容。"""
