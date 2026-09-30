@@ -10,8 +10,31 @@ import httpx
 
 
 DeltaCallback = Callable[[str], None]
-DoneCallback = Callable[[], None]
 ErrorCallback = Callable[[Exception], None]
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    """单次 DeepSeek 响应的 token 用量。"""
+
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+    @classmethod
+    def from_response(cls, response: dict) -> "TokenUsage":
+        usage = response.get("usage") or {}
+        details = usage.get("input_tokens_details") or {}
+        return cls(
+            input_tokens=int(usage.get("input_tokens") or 0),
+            cached_input_tokens=int(details.get("cached_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0),
+            total_tokens=int(usage.get("total_tokens") or 0),
+        )
+
+
+DoneCallback = Callable[[TokenUsage], None]
 
 
 @dataclass(frozen=True)
@@ -126,6 +149,7 @@ class DeepSeekClient:
                         )
 
                     incomplete_reason = None
+                    final_usage: TokenUsage | None = None
                     for line in response.iter_lines():
                         if not line.startswith("data: "):
                             continue
@@ -145,14 +169,20 @@ class DeepSeekClient:
                         elif event_type == "response.failed":
                             err = event.get("response", {}).get("error") or event.get("error")
                             raise RuntimeError(f"DeepSeek 响应失败：{err}")
+                        elif event_type == "response.completed":
+                            final_usage = TokenUsage.from_response(event.get("response") or {})
                         elif event_type == "response.incomplete":
+                            response_data = event.get("response") or {}
                             incomplete_reason = (
-                                event.get("response", {}).get("incomplete_details")
+                                response_data.get("incomplete_details")
                                 or event.get("incomplete_details")
                             )
+                            final_usage = TokenUsage.from_response(response_data)
 
                     if incomplete_reason:
                         on_delta(f"\n[回答可能被截断：{incomplete_reason}]")
-                    on_done()
+                    if final_usage is None:
+                        raise RuntimeError("DeepSeek 流式响应结束时未返回 token usage。")
+                    on_done(final_usage)
         except Exception as exc:  # noqa: BLE001 - 统一交给 UI 显示明确错误
             on_error(exc)

@@ -8,6 +8,7 @@ dist/
 config.json
 context.txt
 state.json
+usage_log.jsonl
 
 # 本地打包产物
 快速知识查询.exe

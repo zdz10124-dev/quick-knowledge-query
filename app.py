@@ -5,11 +5,13 @@ import queue
 import sys
 import threading
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from api_client import ApiConfig, DeepSeekClient
+from api_client import ApiConfig, DeepSeekClient, TokenUsage
 from hotkeys import GlobalHotkeyManager, parse_hotkey
+from ocr_utils import recognize_png
 from screen_utils import (
     ScreenRegion,
     capture_region_png,
@@ -26,6 +28,7 @@ ROOT = (
 CONFIG_PATH = ROOT / "config.json"
 STATE_PATH = ROOT / "state.json"
 CONTEXT_PATH = ROOT / "context.txt"
+USAGE_LOG_PATH = ROOT / "usage_log.jsonl"
 
 
 def load_json(path: Path, default: dict) -> dict:
@@ -599,8 +602,8 @@ class QuickKnowledgeApp:
             self.context_hint.configure(wraplength=wrap)
 
         def on_mousewheel(event) -> None:
-            # 鼠标位于知识文本框时，让文本框自己滚动；其他位置滚动整个页面。
-            if event.widget == self.context_text:
+            # 鼠标位于内部文本框时，让文本框自己滚动；其他位置滚动整个页面。
+            if event.widget in (self.context_text, self.usage_text):
                 return
             if event.delta:
                 canvas.yview_scroll(-1 * int(event.delta / 120), "units")
@@ -704,11 +707,81 @@ class QuickKnowledgeApp:
         for column in range(3):
             action_box.columnconfigure(column, weight=1)
 
+        usage_box = ttk.LabelFrame(outer, text="Token 日志", padding=(8, 6))
+        usage_box.pack(fill="x", pady=(6, 4))
+        usage_top = ttk.Frame(usage_box)
+        usage_top.pack(fill="x")
+        ttk.Label(usage_top, text="每条回复：输入 / 缓存命中输入 / 输出 token").pack(side="left")
+        ttk.Button(usage_top, text="清空日志", command=self.clear_usage_log).pack(side="right")
+        self.usage_text = scrolledtext.ScrolledText(
+            usage_box,
+            wrap="none",
+            height=6,
+            font=("Consolas", 9),
+            state="disabled",
+        )
+        self.usage_text.pack(fill="x", pady=(5, 0))
+        self._load_usage_log()
+
         self.status_label = ttk.Label(outer, text="", anchor="w", justify="left")
         self.status_label.pack(fill="x", pady=(7, 4))
         self._update_context_status()
         self._update_fixed_region_label()
         self.root.after_idle(sync_scrollregion)
+
+    def _format_usage_line(self, record: dict) -> str:
+        """把一条 token 记录格式化成主界面的一行。"""
+        stamp = str(record.get("time", ""))
+        mode = str(record.get("mode", "查询"))
+        return (
+            f"{stamp}  {mode:<10}  "
+            f"输入 {int(record.get('input_tokens', 0)):,}  |  "
+            f"缓存命中 {int(record.get('cached_input_tokens', 0)):,}  |  "
+            f"输出 {int(record.get('output_tokens', 0)):,}"
+        )
+
+    def _append_usage_line(self, line: str) -> None:
+        self.usage_text.configure(state="normal")
+        self.usage_text.insert("end", line + "\n")
+        self.usage_text.see("end")
+        self.usage_text.configure(state="disabled")
+
+    def _load_usage_log(self) -> None:
+        """启动时加载最近 200 条 token 日志。"""
+        if not USAGE_LOG_PATH.exists():
+            return
+        try:
+            lines = USAGE_LOG_PATH.read_text(encoding="utf-8").splitlines()[-200:]
+            for raw in lines:
+                if raw.strip():
+                    self._append_usage_line(self._format_usage_line(json.loads(raw)))
+        except Exception as exc:  # noqa: BLE001
+            self._append_usage_line(f"日志读取失败：{exc}")
+
+    def _record_usage(self, usage: TokenUsage, mode: str) -> None:
+        """持久化并显示单次回复的 token 用量。"""
+        record = {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "mode": mode,
+            "input_tokens": usage.input_tokens,
+            "cached_input_tokens": usage.cached_input_tokens,
+            "output_tokens": usage.output_tokens,
+        }
+        self._append_usage_line(self._format_usage_line(record))
+        try:
+            with USAGE_LOG_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            self._append_usage_line(f"日志文件写入失败：{exc}")
+
+    def clear_usage_log(self) -> None:
+        self.usage_text.configure(state="normal")
+        self.usage_text.delete("1.0", "end")
+        self.usage_text.configure(state="disabled")
+        try:
+            USAGE_LOG_PATH.unlink(missing_ok=True)
+        except OSError as exc:
+            self._append_usage_line(f"日志文件删除失败：{exc}")
 
     def show_api_key_dialog(self) -> None:
         """打开 API Key 输入窗口；环境变量存在时会自动预填。"""
@@ -908,12 +981,41 @@ class QuickKnowledgeApp:
         self.status_label.configure(text="正在调用 DeepSeek V4.1 Flash…")
 
         def worker() -> None:
+            send_question = question
+            send_image = image_png
+            mode = "文字"
+
+            if image_png is not None and bool(self.config.get("ocr", {}).get("enabled", True)):
+                self.ui_queue.put(("ocr_status", "正在用 Windows 自带 OCR 识别截图…"))
+                try:
+                    ocr_text = recognize_png(image_png).strip()
+                    min_chars = int(self.config.get("ocr", {}).get("min_non_whitespace_chars", 4))
+                    compact_length = len("".join(ocr_text.split()))
+                    if compact_length >= min_chars:
+                        send_question = (
+                            f"{self.api.config.screenshot_prompt}\n\n"
+                            "以下是截图经 Windows OCR 识别出的文字，请直接依据这些文字回答；"
+                            "OCR 可能存在少量错字，请结合上下文合理理解：\n\n"
+                            f"{ocr_text}"
+                        )
+                        send_image = None
+                        mode = "截图OCR"
+                        self.ui_queue.put(("ocr_status", f"Windows OCR 已识别 {compact_length:,} 个非空白字符，只发送文字以节省图片 token。"))
+                    else:
+                        mode = "截图原图"
+                        self.ui_queue.put(("ocr_status", "OCR 文字过少，已自动回退发送原图。"))
+                except Exception as exc:  # noqa: BLE001
+                    mode = "截图原图"
+                    self.ui_queue.put(("ocr_status", f"Windows OCR 失败，已自动回退发送原图：{exc}"))
+            elif image_png is not None:
+                mode = "截图原图"
+
             self.api.stream_answer(
                 context=self.context_value,
-                question=question,
-                image_png=image_png,
+                question=send_question,
+                image_png=send_image,
                 on_delta=lambda text: self.ui_queue.put(("delta", text)),
-                on_done=lambda: self.ui_queue.put(("done", None)),
+                on_done=lambda usage: self.ui_queue.put(("done", (usage, mode))),
                 on_error=lambda exc: self.ui_queue.put(("query_error", str(exc))),
             )
 
@@ -934,7 +1036,11 @@ class QuickKnowledgeApp:
                     self.status_label.configure(text=data)
                 elif kind == "delta":
                     self.output.append_delta(str(data))
+                elif kind == "ocr_status":
+                    self.status_label.configure(text=str(data))
                 elif kind == "done":
+                    usage, mode = data
+                    self._record_usage(usage, str(mode))
                     if self.query_lock.locked():
                         self.query_lock.release()
                     self.status_label.configure(text="回答完成。下一次问题仍只使用固定知识上下文，不继承本次问答。")
