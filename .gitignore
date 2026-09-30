@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+
+# 本机运行数据
+config.json
+context.txt
+state.json
+
+# 本地打包产物
+快速知识查询.exe
+*.zip
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

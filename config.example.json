@@ -1,0 +1,34 @@
+{
+  "_说明": "快速知识查询系统示例配置。复制为 config.json 后可自行修改；快捷键也可直接在应用内录制。",
+  "model": "deepseek-flash",
+  "api_base": "https://api.deepseek.com",
+  "api_key_env": "DEEPSEEK_API_KEY",
+  "system_prompt": "你是快速知识查询助手。优先依据已装载的知识补充回答。回答尽量控制在100个汉字以内，只保留最有用的信息；若过度压缩会导致明显错误或歧义，可以适当超过。不要复述问题，不展开无关背景，不展示推理过程。",
+  "screenshot_prompt": "请直接回答截图中最明显的问题；如果截图不是一道问题，则用极简中文说明其中最关键的信息。",
+  "max_output_tokens": 400,
+  "hotkeys": {
+    "text": "Ctrl+Alt+1",
+    "screen_select": "Ctrl+Alt+2",
+    "screen_fixed": "Ctrl+Alt+3"
+  },
+  "ui": {
+    "main_width": 720,
+    "main_height": 650,
+    "output_width": 440,
+    "output_height": 190
+  },
+  "context_file_extensions": [
+    ".txt",
+    ".md",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".csv",
+    ".py",
+    ".cpp",
+    ".c",
+    ".h",
+    ".hpp",
+    ".java"
+  ]
+}

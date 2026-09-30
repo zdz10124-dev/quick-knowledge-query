@@ -1,0 +1,3 @@
+httpx>=0.27,<1
+Pillow>=10,<12
+pyinstaller>=6,<7
