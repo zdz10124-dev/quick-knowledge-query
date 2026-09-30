@@ -669,6 +669,32 @@ class QuickKnowledgeApp:
         self.fixed_region_label = ttk.Label(fixed_box, text="")
         self.fixed_region_label.grid(row=1, column=0, columnspan=2, sticky="w", padx=3, pady=(3, 0))
 
+        ocr_box = ttk.LabelFrame(outer, text="截图处理", padding=(8, 6))
+        ocr_box.pack(fill="x", pady=(6, 4))
+        ocr_cfg = self.config.setdefault("ocr", {})
+        saved_mode = str(ocr_cfg.get("mode", "")).strip()
+        if saved_mode not in {"prefer_ocr", "image_only"}:
+            saved_mode = "prefer_ocr" if bool(ocr_cfg.get("enabled", True)) else "image_only"
+        self.ocr_mode_var = tk.StringVar(value=saved_mode)
+        ttk.Radiobutton(
+            ocr_box,
+            text="优先 OCR",
+            value="prefer_ocr",
+            variable=self.ocr_mode_var,
+            command=self.apply_ocr_mode,
+        ).grid(row=0, column=0, sticky="w", padx=3, pady=3)
+        ttk.Radiobutton(
+            ocr_box,
+            text="不使用 OCR（始终发送原图）",
+            value="image_only",
+            variable=self.ocr_mode_var,
+            command=self.apply_ocr_mode,
+        ).grid(row=1, column=0, sticky="w", padx=3, pady=3)
+        ocr_box.columnconfigure(0, weight=1)
+        self.ocr_mode_hint = ttk.Label(ocr_box, text="", justify="left")
+        self.ocr_mode_hint.grid(row=2, column=0, sticky="w", padx=3, pady=(3, 0))
+        self._refresh_ocr_mode_hint()
+
         hotkey_box = ttk.LabelFrame(outer, text="快捷键", padding=(8, 5))
         hotkey_box.pack(fill="x", pady=(6, 4))
         hotkeys = self.config.setdefault("hotkeys", {})
@@ -782,6 +808,37 @@ class QuickKnowledgeApp:
             USAGE_LOG_PATH.unlink(missing_ok=True)
         except OSError as exc:
             self._append_usage_line(f"日志文件删除失败：{exc}")
+
+    def _get_ocr_mode(self) -> str:
+        """返回当前截图处理模式，并兼容旧版 enabled 布尔配置。"""
+        ocr_cfg = self.config.get("ocr", {})
+        mode = str(ocr_cfg.get("mode", "")).strip()
+        if mode in {"prefer_ocr", "image_only"}:
+            return mode
+        return "prefer_ocr" if bool(ocr_cfg.get("enabled", True)) else "image_only"
+
+    def _refresh_ocr_mode_hint(self) -> None:
+        """刷新主界面 OCR 模式说明。"""
+        if not hasattr(self, "ocr_mode_hint"):
+            return
+        if self._get_ocr_mode() == "prefer_ocr":
+            text = "优先 OCR：文字足够时只发送 OCR 文本；识别失败或文字过少时回退原图。"
+        else:
+            text = "不使用 OCR：截图始终直接发送原图，适合图表、公式、界面等需要视觉信息的内容。"
+        self.ocr_mode_hint.configure(text=text)
+
+    def apply_ocr_mode(self) -> None:
+        """保存截图处理模式并立即生效。"""
+        mode = self.ocr_mode_var.get()
+        if mode not in {"prefer_ocr", "image_only"}:
+            raise ValueError(f"不支持的 OCR 模式：{mode}")
+        ocr_cfg = self.config.setdefault("ocr", {})
+        ocr_cfg["mode"] = mode
+        ocr_cfg["enabled"] = mode == "prefer_ocr"
+        write_json(CONFIG_PATH, self.config)
+        self._refresh_ocr_mode_hint()
+        label = "优先 OCR" if mode == "prefer_ocr" else "不使用 OCR（始终发送原图）"
+        self.status_label.configure(text=f"截图处理已切换为：{label}。")
 
     def show_api_key_dialog(self) -> None:
         """打开 API Key 输入窗口；环境变量存在时会自动预填。"""
@@ -985,7 +1042,7 @@ class QuickKnowledgeApp:
             send_image = image_png
             mode = "文字"
 
-            if image_png is not None and bool(self.config.get("ocr", {}).get("enabled", True)):
+            if image_png is not None and self._get_ocr_mode() == "prefer_ocr":
                 self.ui_queue.put(("ocr_status", "正在用 Windows 自带 OCR 识别截图…"))
                 try:
                     ocr_text = recognize_png(image_png).strip()

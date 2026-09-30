@@ -8,7 +8,8 @@
   "max_output_tokens": 400,
   "ocr": {
     "enabled": true,
-    "min_non_whitespace_chars": 4
+    "min_non_whitespace_chars": 4,
+    "mode": "prefer_ocr"
   },
   "hotkeys": {
     "text": "Ctrl+Alt+1",
